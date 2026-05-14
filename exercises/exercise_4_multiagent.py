@@ -25,10 +25,13 @@ def _last_wins(left: str | None, right: str | None) -> str:
 
 class State(TypedDict):
     question: str
+    needs_tax: bool
+    needs_compliance: bool
+    needs_privacy: bool
     law_analysis: Annotated[str, _last_wins]
     tax_analysis: Annotated[str, _last_wins]
     compliance_analysis: Annotated[str, _last_wins]
-    privacy_analysis: Annotated[str, _last_wins]  # TODO: Thêm field mới
+    privacy_analysis: Annotated[str, _last_wins]
     final_response: str
 
 
@@ -45,22 +48,28 @@ Tập trung vào: hợp đồng, trách nhiệm dân sự, quyền và nghĩa v�
     return {"law_analysis": response.content}
 
 
-def check_routing(state: State) -> list[Send]:
+def check_routing(state: State) -> dict:
     """Quyết định gọi agents nào dựa trên nội dung câu hỏi."""
     question_lower = state["question"].lower()
-    tasks = []
-    
-    # TODO: Thêm logic routing cho privacy_agent
-    # Gợi ý: kiểm tra keywords như "data", "privacy", "gdpr", "dữ liệu"
-    
-    if any(kw in question_lower for kw in ["tax", "irs", "thuế"]):
+    needs_tax = any(kw in question_lower for kw in ["tax", "irs", "thuế"])
+    needs_compliance = any(kw in question_lower for kw in ["compliance", "sec", "regulation"])
+    needs_privacy = any(kw in question_lower for kw in ["data", "privacy", "gdpr", "dữ liệu", "rò rỉ"])
+
+    return {
+        "needs_tax": needs_tax,
+        "needs_compliance": needs_compliance,
+        "needs_privacy": needs_privacy,
+    }
+
+
+def route_to_agents(state: State) -> list[Send]:
+    tasks: list[Send] = []
+    if state.get("needs_tax"):
         tasks.append(Send("tax_agent", state))
-    
-    if any(kw in question_lower for kw in ["compliance", "sec", "regulation"]):
+    if state.get("needs_compliance"):
         tasks.append(Send("compliance_agent", state))
-    
-    # YOUR CODE HERE: thêm điều kiện cho privacy_agent
-    
+    if state.get("needs_privacy"):
+        tasks.append(Send("privacy_agent", state))
     return tasks if tasks else [Send("aggregate_results", state)]
 
 
@@ -92,13 +101,18 @@ Tập trung: SEC, SOX, FCPA, AML, regulatory violations."""
     return {"compliance_analysis": response.content}
 
 
-# TODO: Implement privacy_agent
 def privacy_agent(state: State) -> dict:
     """Agent chuyên về bảo vệ dữ liệu cá nhân và GDPR."""
-    # YOUR CODE HERE
-    # Gợi ý: tương tự tax_agent và compliance_agent
-    # Tập trung: GDPR, data protection, privacy rights, data breach
-    pass
+    llm = get_llm()
+    prompt = f"""Bạn là chuyên gia privacy và bảo vệ dữ liệu cá nhân. Phân tích khía cạnh privacy:
+
+Câu hỏi: {state['question']}
+Phân tích pháp lý: {state.get('law_analysis', 'N/A')}
+
+Tập trung: GDPR, data protection, privacy rights, data breach notification, penalties."""
+
+    response = llm.invoke([HumanMessage(content=prompt)])
+    return {"privacy_analysis": response.content}
 
 
 def aggregate_results(state: State) -> dict:
@@ -112,7 +126,8 @@ def aggregate_results(state: State) -> dict:
         sections.append(f"💰 PHÂN TÍCH THUẾ:\n{state['tax_analysis']}")
     if state.get("compliance_analysis"):
         sections.append(f"✅ PHÂN TÍCH TUÂN THỦ:\n{state['compliance_analysis']}")
-    # TODO: Thêm privacy_analysis vào sections
+    if state.get("privacy_analysis"):
+        sections.append(f"🔒 PHÂN TÍCH PRIVACY:\n{state['privacy_analysis']}")
     
     combined = "\n\n".join(sections)
     
@@ -137,16 +152,16 @@ def build_graph() -> StateGraph:
     graph.add_node("check_routing", check_routing)
     graph.add_node("tax_agent", tax_agent)
     graph.add_node("compliance_agent", compliance_agent)
-    # TODO: Thêm privacy_agent node
+    graph.add_node("privacy_agent", privacy_agent)
     graph.add_node("aggregate_results", aggregate_results)
     
     # Define edges
     graph.add_edge(START, "law_agent")
     graph.add_edge("law_agent", "check_routing")
-    graph.add_conditional_edges("check_routing", lambda x: x)
+    graph.add_conditional_edges("check_routing", route_to_agents)
     graph.add_edge("tax_agent", "aggregate_results")
     graph.add_edge("compliance_agent", "aggregate_results")
-    # TODO: Thêm edge từ privacy_agent đến aggregate_results
+    graph.add_edge("privacy_agent", "aggregate_results")
     graph.add_edge("aggregate_results", END)
     
     return graph.compile()
@@ -168,6 +183,9 @@ async def main():
     
     result = await graph.ainvoke({
         "question": question,
+        "needs_tax": False,
+        "needs_compliance": False,
+        "needs_privacy": False,
         "law_analysis": "",
         "tax_analysis": "",
         "compliance_analysis": "",
